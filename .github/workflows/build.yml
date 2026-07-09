@@ -1,0 +1,27 @@
+name: Build EXE
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          pip install pyinstaller pyautogui opencv-python numpy pywin32
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --noconsole --name EZVIZ_Clicker `
+            --hidden-import=win32gui `
+            --hidden-import=win32ui `
+            --hidden-import=win32con `
+            --hidden-import=win32api `
+            ezviz_clicker.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EZVIZ_Clicker
+          path: dist/EZVIZ_Clicker.exe
