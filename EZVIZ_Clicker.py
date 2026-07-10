@@ -8,6 +8,7 @@ import pyautogui
 import win32gui
 import win32ui
 import win32con
+import win32api
 import logging
 
 # -------------------------------
@@ -220,7 +221,7 @@ def capture_pil(hwnd):
         if right - left <= 0 or bottom - top <= 0:
             return None
 
-        img = ImageGrab.grab(bbox=(left, top, right, bottom))
+        img = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
         arr = np.array(img)  # RGB
         return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
@@ -233,10 +234,23 @@ def capture_pil(hwnd):
 # Метод 5: DXcam (для DirectX/OpenGL окон)
 # -------------------------------
 
-_dxcam_instance = None
+_dxcam_instances = {}  # output_idx -> camera instance
+
+def _get_monitor_bounds():
+    """Возвращает список (output_idx, left, top, right, bottom) для всех мониторов."""
+    monitors = []
+    try:
+        for i, m in enumerate(win32api.EnumDisplayMonitors()):
+            rect = m[2]  # (left, top, right, bottom)
+            monitors.append((i, rect[0], rect[1], rect[2], rect[3]))
+    except Exception as e:
+        logging.error(f"[DXcam] Не удалось получить список мониторов: {e}")
+
+    return monitors
+
 
 def capture_dxcam(hwnd):
-    global _dxcam_instance
+    global _dxcam_instances
     if not DXCAM_AVAILABLE:
         return None
     try:
@@ -247,13 +261,35 @@ def capture_dxcam(hwnd):
         if width <= 0 or height <= 0:
             return None
 
-        if _dxcam_instance is None:
-            _dxcam_instance = dxcam.create()
+        # Определяем, на каком мониторе (output_idx) находится окно EZVIZ
+        win_center_x = left + width // 2
+        win_center_y = top + height // 2
 
-        region = (left, top, right, bottom)
-        frame = _dxcam_instance.grab(region=region)
+        monitors = _get_monitor_bounds()
+        output_idx = 0  # запасной вариант, если не удалось определить
+
+        for idx, mleft, mtop, mright, mbottom in monitors:
+            if mleft <= win_center_x < mright and mtop <= win_center_y < mbottom:
+                output_idx = idx
+                break
+
+        if output_idx not in _dxcam_instances:
+            _dxcam_instances[output_idx] = dxcam.create(output_idx=output_idx)
+
+        cam = _dxcam_instances[output_idx]
+
+        # DXcam ожидает region в координатах относительно этого монитора
+        mon = next((m for m in monitors if m[0] == output_idx), None)
+        if mon:
+            _, mleft, mtop, _, _ = mon
+            region = (left - mleft, top - mtop, right - mleft, bottom - mtop)
+        else:
+            region = (left, top, right, bottom)
+
+        frame = cam.grab(region=region)
 
         if frame is None:
+            logging.info(f"[DXcam] grab вернул None (output_idx={output_idx})")
             return None
 
         return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
