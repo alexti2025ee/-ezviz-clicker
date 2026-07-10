@@ -2,13 +2,11 @@ import time
 import os
 import ctypes
 import traceback
+import datetime
 import cv2
 import numpy as np
 import pyautogui
 import win32gui
-import win32ui
-import win32con
-import win32api
 import logging
 
 # -------------------------------
@@ -22,39 +20,27 @@ except Exception:
     except Exception:
         pass
 
-# -------------------------------
-# Опциональные библиотеки (mss, dxcam)
-# -------------------------------
-try:
-    import mss
-    MSS_AVAILABLE = True
-except Exception:
-    MSS_AVAILABLE = False
-
-try:
-    from PIL import ImageGrab
-    PIL_AVAILABLE = True
-except Exception:
-    PIL_AVAILABLE = False
-
-try:
-    import dxcam
-    DXCAM_AVAILABLE = True
-except Exception:
-    DXCAM_AVAILABLE = False
-
+import mss
+from PIL import ImageGrab
+import tkinter as tk
 
 # -------------------------------
 # Настройки
 # -------------------------------
 
 IMAGE_PATH = r"C:\signature\Continue.png"
-CHECK_TIME = 600   # 10 минут
+CHECK_INTERVAL = 600        # проверка кнопки каждые 10 минут
 SEARCH_THRESHOLD = 0.75
 LOG_FILE = r"C:\signature\EZVIZ_Clicker.log"
-DEBUG_DIR = r"C:\signature\debug"
 
-os.makedirs(DEBUG_DIR, exist_ok=True)
+SHUTDOWN_WINDOW_START_HOUR = 17
+SHUTDOWN_WINDOW_START_MINUTE = 45
+SHUTDOWN_WINDOW_END_HOUR = 18
+SHUTDOWN_WINDOW_END_MINUTE = 0
+
+NOTIFY_TEXT = "Кнопка на камерах будет нажата"
+NOTIFY_DURATION_MS = 5000   # 5 секунд
+
 
 # -------------------------------
 # Лог
@@ -78,7 +64,6 @@ def find_ezviz():
         if not win32gui.IsWindowVisible(hwnd):
             return
         title = win32gui.GetWindowText(hwnd)
-        cls = win32gui.GetClassName(hwnd)
         if "Ezviz" in title or "EZVIZ" in title:
             result.append(hwnd)
 
@@ -91,212 +76,48 @@ def find_ezviz():
 
 
 # -------------------------------
-# Метод 1: BitBlt
+# Захват окна: mss (основной), PIL (запасной)
 # -------------------------------
 
-def capture_bitblt(hwnd):
+def capture_mss(left, top, width, height):
     try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-
-        if width <= 0 or height <= 0:
-            return None
-
-        hwndDC = win32gui.GetWindowDC(hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-
-        bmp = win32ui.CreateBitmap()
-        bmp.CreateCompatibleBitmap(mfcDC, width, height)
-        saveDC.SelectObject(bmp)
-
-        saveDC.BitBlt(
-            (0, 0), (width, height),
-            mfcDC, (0, 0),
-            win32con.SRCCOPY
-        )
-
-        bmpinfo = bmp.GetInfo()
-        bmpstr = bmp.GetBitmapBits(True)
-
-        img = np.frombuffer(bmpstr, dtype=np.uint8)
-        img.shape = (bmpinfo["bmHeight"], bmpinfo["bmWidth"], 4)
-
-        win32gui.DeleteObject(bmp.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwndDC)
-
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-    except Exception as e:
-        logging.error(f"[BitBlt] Error: {e}")
-        return None
-
-
-# -------------------------------
-# Метод 2: PrintWindow (PW_RENDERFULLCONTENT)
-# -------------------------------
-
-def capture_printwindow(hwnd):
-    try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-
-        if width <= 0 or height <= 0:
-            return None
-
-        hwndDC = win32gui.GetWindowDC(hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
-
-        bmp = win32ui.CreateBitmap()
-        bmp.CreateCompatibleBitmap(mfcDC, width, height)
-        saveDC.SelectObject(bmp)
-
-        PW_RENDERFULLCONTENT = 0x00000002
-        result = ctypes.windll.user32.PrintWindow(
-            hwnd, saveDC.GetSafeHdc(), PW_RENDERFULLCONTENT
-        )
-
-        bmpinfo = bmp.GetInfo()
-        bmpstr = bmp.GetBitmapBits(True)
-
-        img = np.frombuffer(bmpstr, dtype=np.uint8)
-        img.shape = (bmpinfo["bmHeight"], bmpinfo["bmWidth"], 4)
-
-        win32gui.DeleteObject(bmp.GetHandle())
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(hwnd, hwndDC)
-
-        if not result:
-            logging.info("[PrintWindow] result=0 (возможно не сработал)")
-
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
-    except Exception as e:
-        logging.error(f"[PrintWindow] Error: {e}")
-        return None
-
-
-# -------------------------------
-# Метод 3: MSS (снимок региона экрана)
-# -------------------------------
-
-def capture_mss(hwnd):
-    if not MSS_AVAILABLE:
-        return None
-    try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-
-        if width <= 0 or height <= 0:
-            return None
-
         with mss.mss() as sct:
             monitor = {"left": left, "top": top, "width": width, "height": height}
             shot = sct.grab(monitor)
             img = np.array(shot)  # BGRA
             return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
     except Exception as e:
-        logging.error(f"[MSS] Error: {e}")
+        logging.error(f"[mss] Error: {e}")
         return None
 
 
-# -------------------------------
-# Метод 4: PIL ImageGrab
-# -------------------------------
-
-def capture_pil(hwnd):
-    if not PIL_AVAILABLE:
-        return None
+def capture_pil(left, top, right, bottom):
     try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-
-        if right - left <= 0 or bottom - top <= 0:
-            return None
-
         img = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
         arr = np.array(img)  # RGB
         return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-
     except Exception as e:
-        logging.error(f"[PIL] Error: {e}")
+        logging.error(f"[pil] Error: {e}")
         return None
 
 
-# -------------------------------
-# Метод 5: DXcam (для DirectX/OpenGL окон)
-# -------------------------------
+def capture_window(hwnd):
+    left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    width = right - left
+    height = bottom - top
 
-_dxcam_instances = {}  # output_idx -> camera instance
+    if width <= 0 or height <= 0:
+        return None, left, top
 
-def _get_monitor_bounds():
-    """Возвращает список (output_idx, left, top, right, bottom) для всех мониторов."""
-    monitors = []
-    try:
-        for i, m in enumerate(win32api.EnumDisplayMonitors()):
-            rect = m[2]  # (left, top, right, bottom)
-            monitors.append((i, rect[0], rect[1], rect[2], rect[3]))
-    except Exception as e:
-        logging.error(f"[DXcam] Не удалось получить список мониторов: {e}")
+    img = capture_mss(left, top, width, height)
+    if img is not None:
+        return img, left, top
 
-    return monitors
+    img = capture_pil(left, top, right, bottom)
+    if img is not None:
+        return img, left, top
 
-
-def capture_dxcam(hwnd):
-    global _dxcam_instances
-    if not DXCAM_AVAILABLE:
-        return None
-    try:
-        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
-        width = right - left
-        height = bottom - top
-
-        if width <= 0 or height <= 0:
-            return None
-
-        # Определяем, на каком мониторе (output_idx) находится окно EZVIZ
-        win_center_x = left + width // 2
-        win_center_y = top + height // 2
-
-        monitors = _get_monitor_bounds()
-        output_idx = 0  # запасной вариант, если не удалось определить
-
-        for idx, mleft, mtop, mright, mbottom in monitors:
-            if mleft <= win_center_x < mright and mtop <= win_center_y < mbottom:
-                output_idx = idx
-                break
-
-        if output_idx not in _dxcam_instances:
-            _dxcam_instances[output_idx] = dxcam.create(output_idx=output_idx)
-
-        cam = _dxcam_instances[output_idx]
-
-        # DXcam ожидает region в координатах относительно этого монитора
-        mon = next((m for m in monitors if m[0] == output_idx), None)
-        if mon:
-            _, mleft, mtop, _, _ = mon
-            region = (left - mleft, top - mtop, right - mleft, bottom - mtop)
-        else:
-            region = (left, top, right, bottom)
-
-        frame = cam.grab(region=region)
-
-        if frame is None:
-            logging.info(f"[DXcam] grab вернул None (output_idx={output_idx})")
-            return None
-
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-    except Exception as e:
-        logging.error(f"[DXcam] Error: {e}")
-        return None
+    return None, left, top
 
 
 # -------------------------------
@@ -329,77 +150,115 @@ def find_buttons(screen, template):
 
 
 # -------------------------------
+# Окно-предупреждение перед кликом
+# -------------------------------
+
+def show_notification(text, duration_ms):
+    try:
+        root = tk.Tk()
+        root.title("EZVIZ Clicker")
+        root.attributes("-topmost", True)
+        root.resizable(False, False)
+
+        width, height = 360, 100
+        screen_w = root.winfo_screenwidth()
+        screen_h = root.winfo_screenheight()
+        x = (screen_w - width) // 2
+        y = (screen_h - height) // 2
+        root.geometry(f"{width}x{height}+{x}+{y}")
+
+        label = tk.Label(
+            root,
+            text=text,
+            font=("Segoe UI", 12),
+            wraplength=320,
+            justify="center"
+        )
+        label.pack(expand=True, fill="both", padx=10, pady=10)
+
+        root.after(duration_ms, root.destroy)
+        root.mainloop()
+
+    except Exception as e:
+        logging.error(f"[notify] Error: {e}")
+
+
+# -------------------------------
 # Клик
 # -------------------------------
 
-def click_points(points, offset_x, offset_y, method_name):
+def click_points(points, offset_x, offset_y):
     for x, y in points:
         sx = offset_x + x
         sy = offset_y + y
-        logging.info(f"[{method_name}] Click Continue X={sx} Y={sy}")
+        logging.info(f"Click Continue X={sx} Y={sy}")
         pyautogui.click(sx, sy)
         time.sleep(1)
+
+
+# -------------------------------
+# Проверка времени выключения
+# -------------------------------
+
+def is_in_shutdown_window():
+    now = datetime.datetime.now().time()
+    window_start = datetime.time(SHUTDOWN_WINDOW_START_HOUR, SHUTDOWN_WINDOW_START_MINUTE)
+    window_end = datetime.time(SHUTDOWN_WINDOW_END_HOUR, SHUTDOWN_WINDOW_END_MINUTE)
+    return window_start <= now <= window_end
+
+
+# -------------------------------
+# Одна проверка кнопки
+# -------------------------------
+
+def run_check(template):
+    try:
+        hwnd = find_ezviz()
+
+        if not hwnd:
+            logging.info("EZVIZ not running")
+            return
+
+        img, left, top = capture_window(hwnd)
+
+        if img is None:
+            logging.info("Не удалось сделать снимок окна EZVIZ")
+            return
+
+        points = find_buttons(img, template)
+
+        if points:
+            logging.info(f"Найдено кнопок: {len(points)}")
+            show_notification(NOTIFY_TEXT, NOTIFY_DURATION_MS)
+            click_points(points, left, top)
+        else:
+            logging.info("Continue button not found")
+
+    except Exception:
+        logging.error(traceback.format_exc())
 
 
 # -------------------------------
 # Основной цикл
 # -------------------------------
 
-logging.info("EZVIZ Clicker (multi-method debug) started")
-logging.info(f"mss available: {MSS_AVAILABLE}, PIL available: {PIL_AVAILABLE}, dxcam available: {DXCAM_AVAILABLE}")
+logging.info("EZVIZ Clicker started")
 
 template = cv2.imread(IMAGE_PATH)
 if template is None:
     logging.error(f"Continue.png не найден по пути: {IMAGE_PATH}")
 
 while True:
-    try:
-        hwnd = find_ezviz()
 
-        if hwnd:
-            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+    if is_in_shutdown_window():
+        logging.info(
+            f"Текущее время попало в окно {SHUTDOWN_WINDOW_START_HOUR:02d}:{SHUTDOWN_WINDOW_START_MINUTE:02d}"
+            f"-{SHUTDOWN_WINDOW_END_HOUR:02d}:{SHUTDOWN_WINDOW_END_MINUTE:02d} — завершение работы"
+        )
+        break
 
-            methods = [
-                ("bitblt", capture_bitblt, "capture_bitblt.png"),
-                ("printwindow", capture_printwindow, "capture_printwindow.png"),
-                ("mss", capture_mss, "capture_mss.png"),
-                ("pil", capture_pil, "capture_pil.png"),
-                ("dxcam", capture_dxcam, "capture_dxcam.png"),
-            ]
+    run_check(template)
 
-            best_points = []
-            best_method = None
+    time.sleep(CHECK_INTERVAL)
 
-            for name, func, filename in methods:
-                img = func(hwnd)
-
-                if img is None:
-                    logging.info(f"[{name}] Снимок не получен (метод недоступен или ошибка)")
-                    continue
-
-                debug_path = os.path.join(DEBUG_DIR, filename)
-                try:
-                    cv2.imwrite(debug_path, img)
-                except Exception as e:
-                    logging.error(f"[{name}] Не удалось сохранить debug-файл: {e}")
-
-                points = find_buttons(img, template)
-                logging.info(f"[{name}] Найдено совпадений: {len(points)}")
-
-                if points and not best_points:
-                    best_points = points
-                    best_method = name
-
-            if best_points:
-                logging.info(f"Клик будет выполнен методом: {best_method}, найдено кнопок: {len(best_points)}")
-                click_points(best_points, left, top, best_method)
-            else:
-                logging.info("Continue button not found ни одним из методов")
-
-        else:
-            logging.info("EZVIZ not running")
-
-    except Exception as e:
-        logging.error(traceback.format_exc())
-
-    time.sleep(CHECK_TIME)
+logging.info("EZVIZ Clicker stopped")
