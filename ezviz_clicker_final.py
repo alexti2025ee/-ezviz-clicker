@@ -44,6 +44,9 @@ SHUTDOWN_WINDOW_END_MINUTE = 0
 NOTIFY_TEXT = "Кнопка на камерах будет нажата"
 NOTIFY_DURATION_MS = 5000   # 5 секунд
 
+STARTUP_NOTIFY_TEXT = "Программа автоклик запущена"
+STARTUP_NOTIFY_DURATION_MS = 3000   # 3 секунды
+
 
 # -------------------------------
 # Лог
@@ -191,28 +194,46 @@ def show_notification(text, duration_ms):
 # -------------------------------
 
 def force_foreground(hwnd):
+    fg_hwnd = win32gui.GetForegroundWindow()
+
     try:
-        fg_hwnd = win32gui.GetForegroundWindow()
         fg_thread, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
         target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
         current_thread = win32api.GetCurrentThreadId()
+    except Exception as e:
+        logging.error(f"[foreground] GetWindowThreadProcessId error: {e}")
+        fg_thread = target_thread = current_thread = None
 
-        attached = False
-        if fg_thread != current_thread:
+    attached = False
+    if fg_thread is not None and fg_thread != current_thread:
+        try:
             win32process.AttachThreadInput(target_thread, current_thread, True)
             attached = True
+        except Exception as e:
+            logging.error(f"[foreground] AttachThreadInput error: {e}")
 
+    try:
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        win32gui.SetForegroundWindow(hwnd)
-        win32gui.BringWindowToTop(hwnd)
-
-        if attached:
-            win32process.AttachThreadInput(target_thread, current_thread, False)
-
-        time.sleep(0.3)  # даём окну время реально получить фокус
-
     except Exception as e:
-        logging.error(f"[foreground] Error: {e}")
+        logging.error(f"[foreground] ShowWindow error: {e}")
+
+    try:
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception as e:
+        logging.error(f"[foreground] SetForegroundWindow error: {e}")
+
+    try:
+        win32gui.BringWindowToTop(hwnd)
+    except Exception as e:
+        logging.error(f"[foreground] BringWindowToTop error: {e}")
+
+    if attached:
+        try:
+            win32process.AttachThreadInput(target_thread, current_thread, False)
+        except Exception:
+            pass
+
+    time.sleep(0.3)  # даём окну время реально получить фокус
 
 
 # -------------------------------
@@ -292,6 +313,8 @@ def run_check(template):
 # -------------------------------
 
 logging.info("EZVIZ Clicker started")
+
+show_notification(STARTUP_NOTIFY_TEXT, STARTUP_NOTIFY_DURATION_MS)
 
 template = cv2.imread(IMAGE_PATH)
 if template is None:
