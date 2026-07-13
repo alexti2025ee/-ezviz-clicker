@@ -7,6 +7,9 @@ import cv2
 import numpy as np
 import pyautogui
 import win32gui
+import win32con
+import win32process
+import win32api
 import logging
 
 # -------------------------------
@@ -107,17 +110,17 @@ def capture_window(hwnd):
     height = bottom - top
 
     if width <= 0 or height <= 0:
-        return None, left, top
+        return None, left, top, None
 
     img = capture_mss(left, top, width, height)
     if img is not None:
-        return img, left, top
+        return img, left, top, "mss"
 
     img = capture_pil(left, top, right, bottom)
     if img is not None:
-        return img, left, top
+        return img, left, top, "pil"
 
-    return None, left, top
+    return None, left, top, None
 
 
 # -------------------------------
@@ -184,6 +187,35 @@ def show_notification(text, duration_ms):
 
 
 # -------------------------------
+# Вывод окна EZVIZ на передний план перед кликом
+# -------------------------------
+
+def force_foreground(hwnd):
+    try:
+        fg_hwnd = win32gui.GetForegroundWindow()
+        fg_thread, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
+        target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+        current_thread = win32api.GetCurrentThreadId()
+
+        attached = False
+        if fg_thread != current_thread:
+            win32process.AttachThreadInput(target_thread, current_thread, True)
+            attached = True
+
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
+        win32gui.BringWindowToTop(hwnd)
+
+        if attached:
+            win32process.AttachThreadInput(target_thread, current_thread, False)
+
+        time.sleep(0.3)  # даём окну время реально получить фокус
+
+    except Exception as e:
+        logging.error(f"[foreground] Error: {e}")
+
+
+# -------------------------------
 # Клик
 # -------------------------------
 
@@ -192,7 +224,22 @@ def click_points(points, offset_x, offset_y):
         sx = offset_x + x
         sy = offset_y + y
         logging.info(f"Click Continue X={sx} Y={sy}")
-        pyautogui.click(sx, sy)
+
+        pyautogui.moveTo(sx, sy)
+        time.sleep(0.15)
+
+        # Первый клик
+        pyautogui.mouseDown()
+        time.sleep(0.15)
+        pyautogui.mouseUp()
+
+        time.sleep(0.6)
+
+        # Второй клик (подстраховка, если первый не был обработан приложением)
+        pyautogui.mouseDown()
+        time.sleep(0.15)
+        pyautogui.mouseUp()
+
         time.sleep(1)
 
 
@@ -219,7 +266,7 @@ def run_check(template):
             logging.info("EZVIZ not running")
             return
 
-        img, left, top = capture_window(hwnd)
+        img, left, top, method = capture_window(hwnd)
 
         if img is None:
             logging.info("Не удалось сделать снимок окна EZVIZ")
@@ -228,8 +275,10 @@ def run_check(template):
         points = find_buttons(img, template)
 
         if points:
-            logging.info(f"Найдено кнопок: {len(points)}")
-            show_notification(NOTIFY_TEXT, NOTIFY_DURATION_MS)
+            logging.info(f"Найдено кнопок: {len(points)} (метод: {method})")
+            notify_text = f"{NOTIFY_TEXT} ({method})"
+            show_notification(notify_text, NOTIFY_DURATION_MS)
+            force_foreground(hwnd)
             click_points(points, left, top)
         else:
             logging.info("Continue button not found")
