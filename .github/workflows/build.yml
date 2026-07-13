@@ -15,9 +15,11 @@ jobs:
           pip install pyinstaller pyautogui opencv-python numpy pywin32 mss pillow
       - name: Build exe
         run: |
-          pyinstaller --onefile --noconsole --name EZVIZ_Clicker `
+          pyinstaller --onefile --noconsole --uac-admin --name EZVIZ_Clicker `
             --hidden-import=win32gui `
             --hidden-import=win32api `
+            --hidden-import=win32con `
+            --hidden-import=win32process `
             --hidden-import=mss `
             --hidden-import=PIL `
             --hidden-import=tkinter `
